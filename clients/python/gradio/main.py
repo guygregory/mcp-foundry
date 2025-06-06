@@ -3,8 +3,22 @@ from dotenv import load_dotenv
 import os
 import gradio as gr
 
+# Run the program as:
+# uv run main.py
+
+# These MCP servers have to be running in SSE mode before you start this Python program:
+#
+# uvx --prerelease=allow --from git+https://github.com/azure-ai-foundry/mcp-foundry.git run-azure-ai-foundry-mcp --transport sse
+#
+# -- or simply run ---
+#
+# bash start-sse.sh in the gradio directory
+
 # Load configuration settings from a .env file
 load_dotenv()
+
+# Determine if running inside a GitHub Codespace
+in_codespace = os.getenv("CODESPACE_NAME") is not None
 
 # Set the demo title for the top of the app, otherwise leave blank to allow to maximize space
 demo_title = ""
@@ -42,6 +56,13 @@ def chat_stream(user_prompt, history):
     # Yield initial state to update the UI
     yield history, history
 
+    # choose server_url based on whether we're in a GitHub Codespace
+    server_url = (
+        f"https://{os.environ['CODESPACE_NAME']}-8000.{os.environ['GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN']}/sse"
+        if in_codespace
+        else "http://127.0.0.1:8000/sse"
+    )
+
     # Prepare parameters for the API call, including model name and streaming flag
     global previous_response_id
     params = {
@@ -52,7 +73,7 @@ def chat_stream(user_prompt, history):
                 {
                     "type": "mcp",
                     "server_label": "foundry",
-                    "server_url": f"https://{os.environ['CODESPACE_NAME']}-8000.{os.environ['GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN']}/sse",
+                    "server_url": server_url,
                     "require_approval": "never",
                 },
         ]
