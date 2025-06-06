@@ -2,7 +2,6 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import gradio as gr
-import base64
 
 # Load configuration settings from a .env file
 load_dotenv()
@@ -10,55 +9,24 @@ load_dotenv()
 # Set the demo title for the top of the app, otherwise leave blank to allow to maximize space
 demo_title = ""
 
-# Set the AI host to Azure, OpenAI, or GitHub Models (coming soon)
-AIhost = "AzureOpenAI" # set to "AzureOpenAI", "OpenAI", or "GitHub" based on your requirement
-
-def get_client(host: str):
-    """
-    Returns the deployment and client based on the specified host.
-    Exits the application if an unsupported host is provided.
-    """
-    if host == "AzureOpenAI":
-        deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
-        client = OpenAI(
-            api_key=os.environ["AZURE_OPENAI_API_KEY"],
-            base_url = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/") + "/openai/v1/",
-            default_query={"api-version": "preview"}, 
-        )
-    elif host == "OpenAI":
-        deployment = "o4-mini"
-        client = OpenAI()
-    elif host == "GitHub":
-        deployment = "o4-mini"
-        print("GitHub Models are not yet supported in this demo. Please check back later.")
-        exit(0)
-    else:
-        print("Invalid AI host specified. Please set AIhost to 'AzureOpenAI', 'OpenAI', or 'GitHub', and provide the configuration in the .env file")
-        exit(0)
-    return deployment, client
-
-# Set the AI host to Azure, OpenAI, or GitHub Models (coming soon)
-deployment, client = get_client(AIhost)
+# Set up the Azure OpenAI client and deployment
+deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
+client = OpenAI(
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    base_url=os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/") + "/openai/v1/",
+    default_query={"api-version": "preview"},
+)
 
 # Global variable to store the response identifier from the last API call
 previous_response_id = None
 
-def encode_image(image_path):
-    """
-    Opens the specified image file, encodes it in base64, and returns the encoded string.
-    """
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
-
-def chat_stream(user_prompt, history, file_path):
+def chat_stream(user_prompt, history):
     """
     Handles a chat interaction by:
     1. Adding the user's message to the conversation history.
     2. Creating a placeholder for the assistant's reply.
     3. Beginning a streamed API call to get the response.
     4. Appending streamed chunks to the assistant's message and yielding updates.
-    
-    If an image file is provided via file_path, it will be encoded and sent along with the user's input.
     """
     # Ensure the history list is initialized
     if history is None:
@@ -100,19 +68,6 @@ def chat_stream(user_prompt, history, file_path):
     # Attach the previous response ID for context if available
     if previous_response_id:
         params["previous_response_id"] = previous_response_id
-
-    # If an image file was uploaded, encode it to base64 and add it to the input payload
-    if file_path is not None:
-        base64_image = encode_image(file_path)
-        params["input"].append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/png;base64,{base64_image}"
-                }
-            ]
-        })
 
     # Initiate the streaming conversation using the client
     stream = client.responses.create(**params)
@@ -212,12 +167,11 @@ def chat_stream(user_prompt, history, file_path):
 
 def clear_chat():
     """
-    Resets the conversation state by clearing the chat history, previous response identifier,
-    and the file upload.
+    Resets the conversation state by clearing the chat history and previous response identifier.
     """
     global previous_response_id
     previous_response_id = None
-    return [], [], None
+    return [], []
 
 # Clears the textbox input
 def clear_textbox():
@@ -243,28 +197,18 @@ with gr.Blocks(fill_height=True, fill_width=True) as demo:
         submit_btn = gr.Button("Submit")
         clear_btn = gr.Button("Clear")
     
-    # Move the file upload control into an accordion at the bottom
-    with gr.Accordion("Click to upload an image (optional)", open=False):
-        file_picker = gr.File(
-            label="Choose an image file",
-            file_count="single",
-            type="filepath",
-            file_types=[".jpg", ".jpeg", ".png"],
-            height=140
-        )
-    
     # Bind the Textbox submit action to the stream processing function and clear the textbox after submission
-    msg.submit(fn=chat_stream, inputs=[msg, state, file_picker], outputs=[chatbot, state]).then(
+    msg.submit(fn=chat_stream, inputs=[msg, state], outputs=[chatbot, state]).then(
         clear_textbox, None, msg
     )
     
     # Also bind the submit button to the same functionality as the Textbox submit
-    submit_btn.click(fn=chat_stream, inputs=[msg, state, file_picker], outputs=[chatbot, state]).then(
+    submit_btn.click(fn=chat_stream, inputs=[msg, state], outputs=[chatbot, state]).then(
         clear_textbox, None, msg
     )
     
     # Bind the clear button to reset the chat and clear the file upload
-    clear_btn.click(fn=clear_chat, inputs=[], outputs=[chatbot, state, file_picker])
+    clear_btn.click(fn=clear_chat, inputs=[], outputs=[chatbot, state])
 
 # Launch the Gradio demo application
 demo.launch()
