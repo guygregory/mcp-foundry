@@ -57,13 +57,6 @@ def chat_stream(user_prompt, history):
                 },
         ]
     }
-    
-    # Add reasoning parameters if the model supports it
-    if deployment in ["o4-mini", "o3"]:
-        params["reasoning"] = {
-            "effort": "high",
-            "summary": "auto"
-        }
 
     # Attach the previous response ID for context if available
     if previous_response_id:
@@ -72,29 +65,14 @@ def chat_stream(user_prompt, history):
     # Initiate the streaming conversation using the client
     stream = client.responses.create(**params)
 
-    # Buffers for streamed content
-    reasoning_summary_buffer = []
+    # Buffer for streamed output text
     output_text_buffer = ""
-    reasoning_summary_present = False
-    output_text_started = False  # Track if output_text has started
+    output_text_started = False
 
     for event in stream:
         # Record the response id from the first event
         if event.type == 'response.created':
             previous_response_id = event.response.id
-
-        # Collect reasoning summary text (may be multi-part)
-        if event.type == 'response.reasoning_summary_text.delta':
-            reasoning_summary_present = True
-            if event.delta:
-                if not reasoning_summary_buffer or getattr(event, "new_part", False):
-                    reasoning_summary_buffer.append("")
-                reasoning_summary_buffer[-1] += event.delta
-
-        # Start a new reasoning summary part
-        if event.type == 'response.reasoning_summary_part.added':
-            reasoning_summary_present = True
-            reasoning_summary_buffer.append("")
 
         # Stream in output text (grey section)
         if event.type == 'response.output_text.delta':
@@ -102,66 +80,16 @@ def chat_stream(user_prompt, history):
                 output_text_buffer += event.delta
                 output_text_started = True  # Set flag when output_text starts
 
-        # On any update, re-render the assistant message
-        if event.type in (
-            'response.reasoning_summary_text.delta',
-            'response.reasoning_summary_text.done',
-            'response.reasoning_summary_part.added',
-            'response.reasoning_summary_part.done',
-            'response.output_text.delta',
-            'response.output_text.done'
-        ):
-            content = ""
-            # Render reasoning summary section if present and has content
-            if reasoning_summary_present and any(reasoning_summary_buffer):
-                def render_reasoning_part(part):
-                    # Split into lines, convert first line markdown bold to HTML bold
-                    lines = part.splitlines()
-                    if lines and lines[0].startswith("**") and lines[0].endswith("**"):
-                        # Remove the leading/trailing '**' and wrap in <strong>
-                        title = lines[0][2:-2]
-                        lines[0] = f"<strong>{title}</strong>"
-                    return "\n".join(lines)
-                summary_text = "\n\n".join(render_reasoning_part(part) for part in reasoning_summary_buffer if part)
-                content += (
-                    "<div style='background-color:#e0f0ff;padding:10px;border-radius:5px;margin-bottom:10px;'>"
-                    "<details open><summary><strong>Reasoning Summary</strong></summary>\n"
-                    f"{summary_text}\n"
-                    "</details></div>"
-                )
-            # Only render output text bubble if output_text has started
-            if output_text_started:
-                content += (
-                    "<div style='background-color:#f0f0f0;padding:10px;border-radius:5px;'>"
-                    f"{output_text_buffer}"
-                    "</div>"
-                )
+        # On any output update, re-render the assistant message
+        if event.type in ('response.output_text.delta', 'response.output_text.done'):
+            # show raw text only, no outer container
+            content = output_text_buffer if output_text_started else ""
             assistant_message["content"] = content
             yield history, history
 
-    # Final update after stream ends (in case of any missed updates)
-    content = ""
-    if reasoning_summary_present and any(reasoning_summary_buffer):
-        def render_reasoning_part(part):
-            lines = part.splitlines()
-            if lines and lines[0].startswith("**") and lines[0].endswith("**"):
-                title = lines[0][2:-2]
-                lines[0] = f"<strong>{title}</strong>"
-            return "\n".join(lines)
-        summary_text = "\n\n".join(render_reasoning_part(part) for part in reasoning_summary_buffer if part)
-        content += (
-            "<div style='background-color:#e0f0ff;padding:10px;border-radius:5px;margin-bottom:10px;'>"
-            "<details open><summary><strong>Reasoning Summary</strong></summary>\n"
-            f"{summary_text}\n"
-            "</details></div>"
-        )
-    # Only render output text bubble if output_text has started
-    if output_text_started:
-        content += (
-            "<div style='background-color:#f0f0f0;padding:10px;border-radius:5px;'>"
-            f"{output_text_buffer}"
-            "</div>"
-        )
+    # Final update after stream ends
+    # raw final text
+    content = output_text_buffer if output_text_started else ""
     assistant_message["content"] = content
     yield history, history
 
