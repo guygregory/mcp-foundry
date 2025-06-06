@@ -1,7 +1,7 @@
-from openai import OpenAI
-from dotenv import load_dotenv
 import os
+from openai import OpenAI
 import gradio as gr
+from dotenv import load_dotenv
 
 # Run the program as:
 # uv run main.py

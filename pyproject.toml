@@ -25,5 +25,10 @@ test = [
 asyncio_default_fixture_loop_scope = "function"  # or "module", "session" based on my use case
 pythonpath = ["src"]
 
+[tool.uv.workspace]
+members = [
+    "clients/python/gradio",
+]
+
 [project.scripts]
 run-azure-ai-foundry-mcp = "mcp_foundry.__main__:main"
