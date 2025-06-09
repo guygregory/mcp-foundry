@@ -40,7 +40,7 @@ from azure.ai.evaluation import (
     evaluate,
 )
 from azure.ai.projects.aio import AIProjectClient
-from azure.ai.projects.models import Agent, MessageRole
+from azure.ai.agents.models import Agent, MessageRole, MessageTextContent
 
 # Azure Imports
 from azure.identity import DefaultAzureCredential
@@ -88,13 +88,6 @@ try:
     # Sync credential for evaluations
     CREDENTIAL = DefaultAzureCredential()
 
-    # Credentials for Azure AI project
-    AZURE_AI_PROJECT = {
-        "subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID"),
-        "resource_group_name": os.environ.get("AZURE_RESOURCE_GROUP"),
-        "project_name": os.environ.get("AZURE_PROJECT_NAME"),
-    }
-
     # Azure OpenAI model configuration
     MODEL_CONFIG = {
         "azure_endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT"),
@@ -107,23 +100,23 @@ try:
     EVAL_DATA_DIR = os.environ.get("EVAL_DATA_DIR", ".")
 
     # Azure AI Agent configuration
-    PROJECT_CONNECTION_STRING = os.environ.get("PROJECT_CONNECTION_STRING")
     DEFAULT_AGENT_ID = os.environ.get("DEFAULT_AGENT_ID")
+    AZURE_AI_PROJECT_ENDPOINT = os.environ.get("AZURE_AI_PROJECT_ENDPOINT")
 
     # Initialization flags
     EVALUATION_INITIALIZED = True
-    if not all([AZURE_AI_PROJECT["subscription_id"], MODEL_CONFIG["azure_endpoint"]]):
+    if not all([AZURE_AI_PROJECT_ENDPOINT, MODEL_CONFIG["azure_endpoint"]]):
         EVALUATION_INITIALIZED = False
         logger.warning("Some evaluation credentials are missing, some evaluators may not work")
 
-    AGENT_INITIALIZED = bool(PROJECT_CONNECTION_STRING)
+    AGENT_INITIALIZED = bool(AZURE_AI_PROJECT_ENDPOINT)
     if not AGENT_INITIALIZED:
-        logger.warning("PROJECT_CONNECTION_STRING is missing, agent features will not work")
+        logger.warning("AZURE_AI_PROJECT_ENDPOINT is missing, agent features will not work")
 
 except Exception as e:
     logger.error(f"Initialization error: {str(e)}")
     CREDENTIAL = None
-    AZURE_AI_PROJECT = None
+    AZURE_AI_PROJECT_ENDPOINT = None
     MODEL_CONFIG = None
     EVALUATION_INITIALIZED = False
     AGENT_INITIALIZED = False
@@ -142,11 +135,7 @@ async def initialize_agent_client():
 
     try:
         async_credential = AsyncDefaultAzureCredential()
-        AI_CLIENT = AIProjectClient.from_connection_string(
-            credential=async_credential,
-            conn_str=PROJECT_CONNECTION_STRING,
-            user_agent="mcp-azure-ai-foundry",
-        )
+        AI_CLIENT = AIProjectClient(endpoint=AZURE_AI_PROJECT_ENDPOINT, credential=async_credential)
         return True
     except Exception as e:
         logger.error(f"Failed to initialize AIProjectClient: {str(e)}")
@@ -262,9 +251,9 @@ def create_text_evaluator(evaluator_name: str) -> Any:
         "code_vulnerability",
         "content_safety",
     ]:
-        if CREDENTIAL is None or AZURE_AI_PROJECT is None:
+        if CREDENTIAL is None or AZURE_AI_PROJECT_ENDPOINT is None:
             raise ValueError(f"Azure credentials required for {evaluator_name} evaluator")
-        return EvaluatorClass(credential=CREDENTIAL, azure_ai_project=AZURE_AI_PROJECT)
+        return EvaluatorClass(credential=CREDENTIAL, azure_ai_project=AZURE_AI_PROJECT_ENDPOINT)
 
     # NLP evaluators don't need special configuration
     else:
@@ -308,20 +297,20 @@ async def query_agent(client: AIProjectClient, agent_id: str, query: str) -> Dic
         agent = await get_agent(client, agent_id)
 
         # Always create a new thread
-        thread = await client.agents.create_thread()
+        thread = await client.agents.threads.create()
         thread_id = thread.id
 
         # Add message to thread
-        await client.agents.create_message(thread_id=thread_id, role=MessageRole.USER, content=query)
+        await client.agents.messages.create(thread_id=thread_id, role=MessageRole.USER, content=query)
 
         # Process the run
-        run = await client.agents.create_run(thread_id=thread_id, agent_id=agent_id)
+        run = await client.agents.runs.create(thread_id=thread_id, agent_id=agent_id)
         run_id = run.id
 
         # Poll until the run is complete
         while run.status in ["queued", "in_progress", "requires_action"]:
             await asyncio.sleep(1)  # Non-blocking sleep
-            run = await client.agents.get_run(thread_id=thread_id, run_id=run.id)
+            run = await client.agents.runs.get(thread_id=thread_id, run_id=run.id)
 
         if run.status == "failed":
             error_msg = f"Agent run failed: {run.last_error}"
@@ -335,8 +324,11 @@ async def query_agent(client: AIProjectClient, agent_id: str, query: str) -> Dic
             }
 
         # Get the agent's response
-        response_messages = await client.agents.list_messages(thread_id=thread_id)
-        response_message = response_messages.get_last_message_by_role(MessageRole.AGENT)
+        response_messages = client.agents.messages.list(thread_id=thread_id)
+        response_message = None
+        async for msg in response_messages:
+            if msg.role == MessageRole.AGENT:
+                response_message = msg
 
         result = ""
         citations = []
@@ -586,8 +578,8 @@ def run_text_eval(
             eval_args = {"data": input_file, "evaluators": evaluators, "evaluator_config": eval_config}
 
             # Add Azure AI project info if initialized
-            if AZURE_AI_PROJECT and include_studio_url:
-                eval_args["azure_ai_project"] = AZURE_AI_PROJECT
+            if AZURE_AI_PROJECT_ENDPOINT and include_studio_url:
+                eval_args["azure_ai_project"] = AZURE_AI_PROJECT_ENDPOINT
 
             # Run evaluation with additional stdout redirection for extra safety
             with contextlib.redirect_stdout(sys.stderr):
@@ -700,9 +692,7 @@ async def agent_query_and_evaluate(
             from azure.ai.projects import AIProjectClient  # This is the sync version
             from azure.identity import DefaultAzureCredential
 
-            sync_client = AIProjectClient.from_connection_string(
-                credential=DefaultAzureCredential(), conn_str=PROJECT_CONNECTION_STRING
-            )
+            sync_client = AIProjectClient(endpoint=AZURE_AI_PROJECT_ENDPOINT, credential=DefaultAzureCredential())
 
             # Step 2: Create converter with the sync client, exactly like example
             from azure.ai.evaluation import AIAgentConverter
@@ -737,7 +727,7 @@ async def agent_query_and_evaluate(
                     evaluation_result = evaluate(
                         data=temp_filename,
                         evaluators=evaluators,
-                        azure_ai_project=AZURE_AI_PROJECT if include_studio_url else None,
+                        azure_ai_project=AZURE_AI_PROJECT_ENDPOINT if include_studio_url else None,
                     )
 
                 # Step 9: Prepare response
@@ -922,12 +912,12 @@ async def list_agents() -> str:
             return "Error: Failed to initialize Azure AI Agent client."
 
     try:
-        agents = await AI_CLIENT.agents.list_agents()
-        if not agents or not agents.data:
+        agents = AI_CLIENT.agents.list_agents()
+        if not agents:
             return "No agents found in the Azure AI Agent Service."
 
         result = "## Available Azure AI Agents\n\n"
-        for agent in agents.data:
+        async for agent in agents:
             result += f"- **{agent.name}**: `{agent.id}`\n"
 
         if DEFAULT_AGENT_ID:
